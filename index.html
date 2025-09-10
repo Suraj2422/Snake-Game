@@ -1,0 +1,349 @@
+<!--
+Nokia Snake — Single-file web app (index.html)
+
+What this file contains:
+1) A step-by-step guide (in comments) to run and extend the game.
+2) A complete, single-file implementation of a classic Nokia-style Snake using <canvas>.
+   - Arrow keys and WASD support
+   - Pause (P), Start, Restart
+   - Mobile swipe controls + on-screen buttons
+   - Score, high score (localStorage)
+   - Speed increases every few apples
+   - Sound beeps using WebAudio
+
+How to run (quick):
+1. Save this entire file as `index.html` on your computer.
+2. Open it with any modern browser (double-click) OR run a local server for testing:
+   - Python 3: `python -m http.server 8000` then open http://localhost:8000/
+3. Play with arrow keys or swipe on mobile. Use Start / Pause / Restart buttons.
+
+How to deploy: push `index.html` to a GitHub repo and enable GitHub Pages (or host on Netlify / Vercel).
+
+Want changes? I can:
+- Add classic Nokia visuals (green display + pixelated snake)
+- Make different skins, levels, obstacles
+- Add leaderboard backend (Firebase / simple Express + SQLite)
+
+-->
+
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Nokia Snake — Single File</title>
+  <style>
+    :root{--bg:#0b0b0b;--panel:#f5f5f5;--accent:#2bff6f;--muted:#9aa0a6}
+    *{box-sizing:border-box;font-family:Inter,system-ui,Segoe UI,Roboto,"Helvetica Neue",Arial}
+    body{margin:0;background:linear-gradient(180deg,#081018 0%, #08111b 100%);color:#e6eef6;display:flex;align-items:center;justify-content:center;min-height:100vh}
+    .wrap{width:100%;max-width:760px;padding:20px}
+    header{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
+    h1{font-size:20px;margin:0}
+    .board{display:flex;gap:16px;align-items:flex-start}
+    #game-wrap{background:#0e1620;padding:12px;border-radius:12px;box-shadow:0 6px 18px rgba(0,0,0,0.6)}
+    canvas{display:block;border-radius:6px;background:#111827}
+    .hud{display:flex;gap:10px;margin-top:8px;justify-content:space-between}
+    .hud div{font-size:14px;color:var(--muted)}
+    .controls{margin-top:10px;display:flex;gap:8px}
+    button{background:#111827;color:#e6eef6;border:1px solid rgba(255,255,255,0.06);padding:8px 10px;border-radius:8px;cursor:pointer}
+    button.secondary{background:transparent;border:1px solid rgba(255,255,255,0.08)}
+    .touch-controls{display:none;margin-top:12px;gap:8px}
+    .touch-controls button{width:48px;height:48px;padding:0;font-weight:bold}
+    .info{color:var(--muted);font-size:13px;margin-top:8px}
+    @media (max-width:680px){.board{flex-direction:column;align-items:center}.touch-controls{display:flex;align-items:center;justify-content:center}}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>Nokia Snake — Play in your browser</h1>
+      <div style="text-align:right">
+        <div style="font-size:12px;color:#9aa0a6">Classic mechanics • Arrow keys / swipe</div>
+      </div>
+    </header>
+
+    <section class="board">
+      <div id="game-wrap">
+        <canvas id="game"></canvas>
+        <div class="hud">
+          <div>Score: <strong id="score">0</strong></div>
+          <div>High: <strong id="highscore">0</strong></div>
+          <div>Speed: <strong id="speed">1</strong></div>
+        </div>
+
+        <div class="controls">
+          <button id="startBtn">Start</button>
+          <button id="pauseBtn">Pause</button>
+          <button id="restartBtn" class="secondary">Restart</button>
+        </div>
+
+        <div class="touch-controls" id="touchControls">
+          <button id="upBtn">↑</button>
+        </div>
+      </div>
+
+      <div style="max-width:320px">
+        <div style="background:#07132b;padding:12px;border-radius:10px">
+          <strong style="display:block;margin-bottom:6px">How to play</strong>
+          <div class="info">Use Arrow keys or WASD to move. Press <kbd>P</kbd> to pause. On mobile swipe to change direction. Eat apples to grow. Hitting wall or yourself ends the game.</div>
+          <div style="margin-top:10px;color:#9aa0a6;font-size:13px">Speed increases every 4 apples. High score saved locally.</div>
+        </div>
+
+        <div style="height:10px"></div>
+        <div style="background:#071320;padding:10px;border-radius:10px;font-size:13px;color:#9aa0a6">
+          Want custom features? I can add levels, obstacles, or a server-backed leaderboard.
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    // Configuration
+    const GRID = 20;             // number of cells per row/column (square grid)
+    const CELL = 20;             // pixel size for each cell (canvas size will be GRID * CELL)
+    const START_SPEED_MS = 160;  // initial ms per move (smaller is faster)
+    const SPEED_STEP = -8;       // how much to reduce ms per speed increase (negative to reduce interval)
+    const SPEED_EVERY = 4;       // every N apples increase speed
+
+    // Canvas setup
+    const canvas = document.getElementById('game');
+    const ctx = canvas.getContext('2d');
+    canvas.width = GRID * CELL;
+    canvas.height = GRID * CELL;
+
+    // HUD
+    const scoreEl = document.getElementById('score');
+    const highEl = document.getElementById('highscore');
+    const speedEl = document.getElementById('speed');
+
+    // Buttons
+    const startBtn = document.getElementById('startBtn');
+    const pauseBtn = document.getElementById('pauseBtn');
+    const restartBtn = document.getElementById('restartBtn');
+
+    // Game state
+    let snake = [];
+    let dir = {x:1,y:0}; // initial right
+    let nextDir = null;  // queued direction to avoid multiple changes in one tick
+    let apple = null;
+    let score = 0;
+    let highscore = parseInt(localStorage.getItem('snakeHigh') || '0', 10) || 0;
+    let lastTick = 0;
+    let stepMs = START_SPEED_MS;
+    let applesEaten = 0;
+    let running = false;
+    let paused = false;
+    let gameOver = false;
+
+    // Audio (beeps)
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    function beep(freq=440, time=0.05){
+      try{
+        const o = audioCtx.createOscillator();
+        const g = audioCtx.createGain();
+        o.connect(g); g.connect(audioCtx.destination);
+        o.type='sine'; o.frequency.value = freq; g.gain.value = 0.08;
+        o.start(); o.stop(audioCtx.currentTime + time);
+      }catch(e){/*ignore*/}
+    }
+
+    function resetGame(){
+      snake = [];
+      const mid = Math.floor(GRID/2);
+      // initial snake length 3 pointing right
+      snake.push({x:mid-1,y:mid});
+      snake.push({x:mid,y:mid});
+      snake.push({x:mid+1,y:mid});
+      dir = {x:1,y:0}; nextDir = null;
+      apple = spawnApple();
+      score = 0; applesEaten = 0; stepMs = START_SPEED_MS; running = false; paused = false; gameOver = false;
+      updateHUD(); draw();
+    }
+
+    function spawnApple(){
+      // choose a random empty cell
+      const taken = new Set(snake.map(s=>s.x+','+s.y));
+      const empty = [];
+      for(let x=0;x<GRID;x++)for(let y=0;y<GRID;y++) if(!taken.has(x+','+y)) empty.push({x,y});
+      if(empty.length===0) return null; // filled grid (rare)
+      return empty[Math.floor(Math.random()*empty.length)];
+    }
+
+    function updateHUD(){
+      scoreEl.textContent = score;
+      highEl.textContent = highscore;
+      // Speed display: convert ms to a simple level number
+      const level = Math.max(1, Math.round((START_SPEED_MS - stepMs)/Math.abs(SPEED_STEP) + 1));
+      speedEl.textContent = level;
+    }
+
+    function update(){
+      if(paused || gameOver) return;
+      if(nextDir){
+        // apply queued direction if it's not opposite
+        if(! (nextDir.x === -dir.x && nextDir.y === -dir.y) ) dir = nextDir;
+        nextDir = null;
+      }
+      const head = snake[snake.length-1];
+      const newHead = {x: head.x + dir.x, y: head.y + dir.y};
+
+      // walls detection (classic Nokia: hitting wall = game over)
+      if(newHead.x < 0 || newHead.x >= GRID || newHead.y < 0 || newHead.y >= GRID){
+        endGame(); return;
+      }
+
+      // self collision
+      for(const s of snake){ if(s.x===newHead.x && s.y===newHead.y){ endGame(); return; } }
+
+      snake.push(newHead);
+
+      // apple eaten?
+      if(apple && newHead.x===apple.x && newHead.y===apple.y){
+        score += 1; applesEaten += 1; beep(880,0.06);
+        apple = spawnApple();
+        // speed up every SPEED_EVERY apples
+        if(applesEaten % SPEED_EVERY === 0){
+          stepMs = Math.max(45, stepMs + SPEED_STEP); // lower bound to keep playable
+        }
+      }else{
+        // move forward: remove tail
+        snake.shift();
+      }
+
+      // update highscore
+      if(score > highscore){ highscore = score; localStorage.setItem('snakeHigh', highscore); }
+      updateHUD();
+    }
+
+    function endGame(){
+      gameOver = true; running = false; beep(140,0.2);
+      // flash canvas or show message
+      flashGameOver();
+    }
+
+    function flashGameOver(){
+      const prev = ctx.getImageData(0,0,canvas.width,canvas.height);
+      // draw overlay
+      ctx.fillStyle = 'rgba(180,40,40,0.12)';
+      ctx.fillRect(0,0,canvas.width,canvas.height);
+      setTimeout(()=>{ draw(); ctx.putImageData(prev,0,0); drawGameOverText(); }, 80);
+    }
+
+    function drawGameOverText(){
+      ctx.fillStyle = 'rgba(0,0,0,0.6)';
+      ctx.fillRect(0, canvas.height/2 - 30, canvas.width, 60);
+      ctx.fillStyle = '#ff7b7b';
+      ctx.font = '22px monospace'; ctx.textAlign='center';
+      ctx.fillText('GAME OVER', canvas.width/2, canvas.height/2+6);
+    }
+
+    function draw(){
+      // clear
+      ctx.fillStyle = '#041018'; ctx.fillRect(0,0,canvas.width,canvas.height);
+
+      // draw grid faint (optional)
+      ctx.strokeStyle = 'rgba(255,255,255,0.03)';
+      for(let i=0;i<=GRID;i++){
+        ctx.beginPath(); ctx.moveTo(i*CELL,0); ctx.lineTo(i*CELL,canvas.height); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(0,i*CELL); ctx.lineTo(canvas.width,i*CELL); ctx.stroke();
+      }
+
+      // draw apple
+      if(apple){
+        ctx.fillStyle = '#ff4d4d';
+        ctx.fillRect(apple.x*CELL+2, apple.y*CELL+2, CELL-4, CELL-4);
+      }
+
+      // draw snake (classic: head brighter)
+      for(let i=0;i<snake.length;i++){
+        const s = snake[i];
+        const t = i===snake.length-1 ? '#bfffbf' : '#86f0a0';
+        ctx.fillStyle = t;
+        ctx.fillRect(s.x*CELL+2, s.y*CELL+2, CELL-4, CELL-4);
+      }
+
+      if(gameOver) drawGameOverText();
+    }
+
+    // animation loop using accumulative timing so we can adjust speed dynamically
+    let acc = 0;
+    function loop(timestamp){
+      if(!lastTick) lastTick = timestamp;
+      const dt = timestamp - lastTick; lastTick = timestamp;
+      acc += dt;
+      if(acc >= stepMs){
+        acc = 0; update(); draw();
+      }
+      if(!gameOver && running) requestAnimationFrame(loop);
+    }
+
+    // Input handling
+    window.addEventListener('keydown', e => {
+      if(!running && ['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','KeyW','KeyA','KeyS','KeyD'].includes(e.code)){
+        startGame();
+      }
+      if(e.code === 'KeyP') {
+        togglePause(); return;
+      }
+      const map = {
+        'ArrowUp': {x:0,y:-1}, 'ArrowDown':{x:0,y:1}, 'ArrowLeft':{x:-1,y:0}, 'ArrowRight':{x:1,y:0},
+        'KeyW':{x:0,y:-1}, 'KeyS':{x:0,y:1}, 'KeyA':{x:-1,y:0}, 'KeyD':{x:1,y:0}
+      };
+      if(map[e.code]){
+        const d = map[e.code];
+        // queue direction; avoid reversal
+        if(!(d.x === -dir.x && d.y === -dir.y)) nextDir = d;
+        e.preventDefault();
+      }
+    });
+
+    // Touch / swipe support
+    let touchStartX = null, touchStartY = null;
+    window.addEventListener('touchstart', e => {
+      if(e.touches && e.touches[0]){
+        touchStartX = e.touches[0].clientX; touchStartY = e.touches[0].clientY;
+      }
+    }, {passive:true});
+    window.addEventListener('touchend', e => {
+      if(touchStartX === null) return;
+      const touch = e.changedTouches[0];
+      const dx = touch.clientX - touchStartX; const dy = touch.clientY - touchStartY;
+      if(Math.abs(dx) > 20 || Math.abs(dy) > 20){
+        if(Math.abs(dx) > Math.abs(dy)){
+          nextDir = dx > 0 ? {x:1,y:0} : {x:-1,y:0};
+        }else{
+          nextDir = dy > 0 ? {x:0,y:1} : {x:0,y:-1};
+        }
+        if(!running) startGame();
+      }
+      touchStartX = null; touchStartY = null;
+    }, {passive:true});
+
+    // Buttons
+    startBtn.addEventListener('click', ()=> startGame());
+    pauseBtn.addEventListener('click', ()=> togglePause());
+    restartBtn.addEventListener('click', ()=> { resetGame(); startGame(); });
+
+    // Start & pause
+    function startGame(){ if(gameOver) resetGame(); if(!running){ running = true; paused = false; lastTick = 0; acc = 0; requestAnimationFrame(loop); } }
+    function togglePause(){ if(!running) return; paused = !paused; if(paused) { running = false; pauseBtn.textContent = 'Resume'; } else { pauseBtn.textContent = 'Pause'; running = true; lastTick = 0; requestAnimationFrame(loop); } }
+
+    // initial setup
+    resetGame();
+
+    // Small helper for responsiveness: scale canvas on small screens
+    function responsiveScale(){
+      const max = Math.min(window.innerWidth - 40, 480);
+      const scale = Math.floor(max / (GRID*CELL) * 100) / 100;
+      canvas.style.width = (canvas.width * scale) + 'px';
+      canvas.style.height = (canvas.height * scale) + 'px';
+    }
+    window.addEventListener('resize', responsiveScale);
+    responsiveScale();
+
+    // Expose some debug/controls in console
+    window.SnakeGame = {resetGame, startGame, endGame};
+
+  </script>
+</body>
+</html>
